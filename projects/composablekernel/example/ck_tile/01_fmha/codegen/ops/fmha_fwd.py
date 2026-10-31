@@ -1405,36 +1405,74 @@ class KernelComponentFactoryGfx11(CompatibilityRuleFactory):
     def get_rules(cls) -> List[CompatibilityRule]:
         rules = super().get_rules()
 
-        def check_d128_tile_pipeline(
+        def check_hdim_tile(
             problem_ctx: ProblemContext, kernel_ctx: KernelContext
         ) -> bool:
             if problem_ctx.dtype not in cls._DT_FP16_BF16:
                 return True
 
+            # Gfx115 inherits these rules but uses different tiles.
+            if cls.arch.name == "gfx11":
+                if (
+                    (problem_ctx.hdim, problem_ctx.hdim_v) == (64, 64)
+                    and kernel_ctx.tile.F_bm0 == 128
+                    and kernel_ctx.tile.F_bn0 == 64
+                ):
+                    # Dropout uses K1=32; non-dropout inputs use K1=64.
+                    return (kernel_ctx.tile.F_bk1 == 32) == (
+                        kernel_ctx.pipeline.F_dropout == "t"
+                    )
+                if (
+                    (problem_ctx.hdim, problem_ctx.hdim_v) == (128, 128)
+                    and kernel_ctx.tile.F_bm0 == 128
+                    and kernel_ctx.tile.F_bn0 == 64
+                ):
+                    # Unpadded inputs without bias/dropout select K32 or K64 at runtime.
+                    if (
+                        kernel_ctx.pipeline.F_bias == "no"
+                        and kernel_ctx.pipeline.F_dropout == "f"
+                        and kernel_ctx.pipeline.F_dpad == "f"
+                    ):
+                        return True
+                    # Other inputs use K32 only for unpadded elementwise bias with dropout.
+                    use_k32 = (
+                        kernel_ctx.pipeline.F_bias == "bias"
+                        and kernel_ctx.pipeline.F_dropout == "t"
+                        and kernel_ctx.pipeline.F_dpad == "f"
+                    )
+                    return (kernel_ctx.tile.F_bk0 == 32) == use_k32
+
             if (problem_ctx.hdim, problem_ctx.hdim_v) != (128, 128):
                 return True
 
-            # For (128, 128) head dims, partial-fragment support in qr_hpad removes the need
-            # for the previous qr_hpad-specific handling that was added to avoid register spill.
-            # qr_hpad now reuses the regular 128x64 tile choice.
-            # The 64x64 tile remains disabled for qr_hpad because it is consistently slower
-            # in our measurements.
+            # Keep qr_hpad on the regular M128 tile; M64 is slower.
             if kernel_ctx.tile.F_bm0 == 64 and kernel_ctx.tile.F_bn0 == 64:
                 return kernel_ctx.pipeline.tag != "qr_hpad"
 
             return True
 
-        rules.append(check_d128_tile_pipeline)
+        rules.append(check_hdim_tile)
         return rules
 
     @classmethod
     def get_hdim_tile_size_dict(cls, dtype: str) -> Optional[dict]:
         if dtype in cls._DT_FP16_BF16:
+            # Use M64 for short Q or too few M128 blocks; otherwise use M128.
+            m64_d64_constraint = (
+                "a.max_seqlen_q < 4096 || get_num_blocks(128) < num_cus"
+            )
+            # Use K32 for dropout or short Q/K; feature support is checked above.
+            m128_d128_k32_constraint = (
+                "t.has_dropout || (a.max_seqlen_q < 1024 && a.seqlen_k < 1024)"
+            )
             return {
                 #                             bm0, bn0, bk0, bn1, bk1,
                 ( 32,  32) : [FmhaFwdTileSize(256,  64,  16,  32,  64,   32,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
-                ( 64,  64) : [FmhaFwdTileSize(256,  64,  32,  64,  64,   64,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
-                (128, 128) : [FmhaFwdTileSize(128,  64,  64, 128,  64,  128,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,   6)],
+                ( 64,  64) : [FmhaFwdTileSize( 64,  64,  32,  64,  32,   64,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,  -1, CppConstraint(m64_d64_constraint)),
+                              FmhaFwdTileSize(128,  64,  32,  64,  32,   64,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,  -1),
+                              FmhaFwdTileSize(128,  64,  32,  64,  64,   64,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
+                (128, 128) : [FmhaFwdTileSize(128,  64,  32, 128,  32,  128,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,   6, CppConstraint(m128_d128_k32_constraint)),
+                              FmhaFwdTileSize(128,  64,  64, 128,  64,  128,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,   6)],
                 (192, 128) : [FmhaFwdTileSize( 64,  64,  32, 128,  32,  256,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
                 (256, 256) : [FmhaFwdTileSize(128,  64, 128, 256,  64,  256,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,   6)]
             }  # fmt: skip
@@ -1492,13 +1530,46 @@ class KernelComponentFactoryGfx12(CompatibilityRuleFactory):
         return cls._DT_FP16_BF16 + cls._DT_FP8_FP8BF16 + cls._DT_FP8FP32
 
     @classmethod
+    def get_rules(cls) -> List[CompatibilityRule]:
+        rules = super().get_rules()
+
+        def check_hdim_tile(
+            problem_ctx: ProblemContext, kernel_ctx: KernelContext
+        ) -> bool:
+            if (
+                cls is KernelComponentFactoryGfx12
+                and problem_ctx.dtype in cls._DT_FP16_BF16
+                and (problem_ctx.hdim, problem_ctx.hdim_v) in ((64, 64), (128, 128))
+            ):
+                # Dropout selects M64; omit unused large-tile kernels.
+                return (
+                    kernel_ctx.tile.F_bm0 == 64 or kernel_ctx.pipeline.F_dropout == "f"
+                )
+            return True
+
+        rules.append(check_hdim_tile)
+        return rules
+
+    @classmethod
     def get_hdim_tile_size_dict(cls, dtype: str) -> Optional[dict]:
         if dtype in cls._DT_FP16_BF16:
+            # Use M64 for dropout or short Q; otherwise use M128.
+            m64_d64_constraint = "t.has_dropout || a.max_seqlen_q < 1024"
+            # Use M64 for dropout, short Q, or too few M256 blocks; otherwise use M256.
+            m64_d128_constraint = (
+                "t.has_dropout || a.max_seqlen_q < 1024 || "
+                "get_num_thread_blocks(a.batch, "
+                "a.num_head_q_total > 0 ? a.num_head_q_total : a.nhead_q, "
+                "a.max_seqlen_q, 256) <= "
+                "(t.mask_type == mask_enum::no_mask ? 2 : 4) * num_cus"
+            )
             return {
                 #                             bm0, bn0, bk0, bn1, bk1,
                 ( 32,  32) : [FmhaFwdTileSize(256,  64,  16,  32,  64,   32, 16, 1, 1, 16, 1, 1,  16, 16, 16,  16, 16, 16,   8)],
-                ( 64,  64) : [FmhaFwdTileSize(128, 128,  32,  64, 128,   64,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
-                (128, 128) : [FmhaFwdTileSize(256,  64,  64, 128,  64,  128, 16, 1, 1, 16, 1, 1,  16, 16, 16,  16, 16, 16,   8)],
+                ( 64,  64) : [FmhaFwdTileSize( 64,  64,  32,  64,  32,   64,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,  -1, CppConstraint(m64_d64_constraint)),
+                              FmhaFwdTileSize(128, 128,  32,  64, 128,   64,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
+                (128, 128) : [FmhaFwdTileSize( 64,  64,  32, 128,  16,  128,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,   4, CppConstraint(m64_d128_constraint)),
+                              FmhaFwdTileSize(256,  64,  64, 128,  64,  128, 16, 1, 1, 16, 1, 1,  16, 16, 16,  16, 16, 16,   8)],
                 (192, 128) : [FmhaFwdTileSize(128,  64,  64, 128,  64,  256,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,   6)],
                 (256, 256) : [FmhaFwdTileSize(256,  64,  64, 256,  64,  256, 16, 1, 1, 16, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
             }  # fmt: skip

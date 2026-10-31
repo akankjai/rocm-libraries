@@ -79,6 +79,20 @@ struct BlockFmhaPipelineQRKSVS
     // needed for K/V aliasing.
 #if defined(__gfx11__) || defined(__gfx120__)
     static constexpr bool kUseSeparateKVLds =
+#if defined(__gfx11__) && !defined(__gfx115__)
+        // The M64/M128 D64 K1=32 tiles benefit from sharing K/V LDS.
+        !(kQKHeaddim == 64 && kN1 == 64 && kM0 <= 128 && kN0 == 64 && kK0 == 32 && kK1 == 32) &&
+        // D128 K32 tiles and bias with dropout benefit from sharing K/V LDS.
+        !(kQKHeaddim == 128 && kN1 == 128 &&
+          ((kK0 == 32 && kK1 == 32) ||
+           (kHasDropout && BiasEnum == BlockAttentionBiasEnum::ELEMENTWISE_BIAS))) &&
+#elif defined(__gfx120__)
+        // D64 with bias, mask, dropout and sink benefits from sharing K/V LDS.
+        !(kQKHeaddim == 64 && BiasEnum == BlockAttentionBiasEnum::ELEMENTWISE_BIAS &&
+          FmhaMask::IsMasking && kHasDropout && kHasSink) &&
+        // M64 tiles without bias or dropout benefit from sharing K/V LDS.
+        (kM0 > 64 || BiasEnum != BlockAttentionBiasEnum::NO_BIAS || kHasDropout) &&
+#endif
 #if defined(__gfx115__)
         !(kQKHeaddim == 64 && kN1 == 64) &&
 #endif
@@ -678,6 +692,21 @@ struct BlockFmhaPipelineQRKSVS
             constexpr auto kSepLdsVPrefetch = kQKHeaddim == 128 && kN1 == 128
                                                   ? VPrefetchPoint::AfterGemm0Tail
                                                   : VPrefetchPoint::BeforeGemm0Tail;
+#elif defined(__gfx11__)
+            // D128 dropout without bias benefits from loading V after softmax.
+            constexpr auto kSepLdsVPrefetch = kQKHeaddim == 128 && kN1 == 128 && kHasDropout &&
+                                                      BiasEnum == BlockAttentionBiasEnum::NO_BIAS
+                                                  ? VPrefetchPoint::AfterSoftmax
+                                                  : VPrefetchPoint::BeforeGemm0Tail;
+#elif defined(__gfx120__)
+            // Overlap V loads with bias, softmax and dropout on the combined D128 path.
+            constexpr auto kSepLdsVPrefetch =
+                (kQKHeaddim == 128 && BiasEnum == BlockAttentionBiasEnum::ELEMENTWISE_BIAS &&
+                 FmhaMask::IsMasking && kHasDropout && kHasSink)
+                    ? VPrefetchPoint::AfterGemm0Tail
+                : (kHasDropout && (kQKHeaddim == 64 || kQKHeaddim == 128))
+                    ? VPrefetchPoint::AfterSoftmax
+                    : VPrefetchPoint::BeforeGemm0Tail;
 #else
             constexpr auto kSepLdsVPrefetch = VPrefetchPoint::BeforeGemm0Tail;
 #endif
