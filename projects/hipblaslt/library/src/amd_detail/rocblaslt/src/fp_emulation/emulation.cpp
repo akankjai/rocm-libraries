@@ -180,21 +180,23 @@ namespace FixedPointEmulation
          * overheads are negligible.  Cards with a chip row use their measured
          * values instead.
          *
-         * FP64 thresholds:
+         * FP64 thresholds: m * n * k of the smallest measured square size from
+         * which emulated FP64 is faster than native in the TN and NN layouts.
          *   RDNA 3:   on the Radeon Pro W7800, emulated FP64 is slower than
-         *             native at 512^3 and faster at 640^3 (2.6e8).
+         *             native at 512^3 and faster from 576^3 (1.9e8) on.
          *   RDNA 3.5: copied from RDNA 3; not yet measured on RDNA 3.5.
-         *   RDNA 4:   on the Radeon RX 9070 XT, emulation ties native FP64 at
-         *             512^3 and is faster at 640^3.                            */
+         *   RDNA 4:   on the Radeon RX 9070 XT, emulated FP64 is faster than
+         *             native from 384^3 (5.5e7) on; at 320^3 the faster path
+         *             depends on the layout.                                   */
         static const ArchRow rows[] = {
-            {"gfx1100", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.5e8}, // RDNA 3
-            {"gfx1101", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.5e8}, // RDNA 3
-            {"gfx1102", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.5e8}, // RDNA 3
-            {"gfx1150", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.5e8}, // RDNA 3.5
-            {"gfx1151", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.5e8}, // RDNA 3.5
-            {"gfx1152", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.5e8}, // RDNA 3.5
-            {"gfx1200", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.0e8}, // RDNA 4
-            {"gfx1201", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 2.0e8}, // RDNA 4
+            {"gfx1100", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 1.9e8}, // RDNA 3
+            {"gfx1101", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 1.9e8}, // RDNA 3
+            {"gfx1102", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 1.9e8}, // RDNA 3
+            {"gfx1150", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 1.9e8}, // RDNA 3.5
+            {"gfx1151", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 1.9e8}, // RDNA 3.5
+            {"gfx1152", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 1.9e8}, // RDNA 3.5
+            {"gfx1200", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 5.5e7}, // RDNA 4
+            {"gfx1201", {0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, 5.5e7}, // RDNA 4
         };
         if(gcn_arch_name == nullptr)
             return nullptr;
