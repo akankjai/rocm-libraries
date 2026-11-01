@@ -32,6 +32,8 @@ values and uses the default instead.
       - | ``performant``: Emulate only when predicted to be faster than the
           native GEMM (default)
         | ``eager``: Always emulate, regardless of problem size
+        | Unset on a Radeon GPU: FP64 GEMMs are emulated from a problem-size
+          threshold, FP32 GEMMs use ``performant``
 
     * - | ``HIPBLAS_FIXEDPOINT_EMULATION_FP64_MANTISSA_BIT_COUNT``
         | Sets the Automatic Dynamic Precision target for FP64, in mantissa bits.

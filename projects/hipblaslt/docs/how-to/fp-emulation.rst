@@ -19,6 +19,8 @@ Emulation is a throughput optimization. It pays off for large GEMMs with high
 arithmetic intensity on GPUs where INT8 peak throughput greatly exceeds FP64 or
 FP32 peak throughput. By default, hipBLASLt predicts for each problem whether
 emulation is faster than the native GEMM, and runs the native GEMM when it isn't.
+On Radeon GPUs, FP64 GEMMs use a problem-size threshold instead. See
+`Strategy`_.
 
 For background on the Ozaki scheme and how emulation compares across GPUs, see
 :doc:`Data types and precision support <rocm:reference/precision-support>`.
@@ -31,7 +33,10 @@ Prerequisites
 hipBLASLt emulates a ``hipblasLtMatmul`` call only when all of the following
 conditions are met:
 
-* The GPU is an AMD Instinct MI350X or MI355X.
+* The GPU is an AMD Instinct MI350X or MI355X, or an AMD Radeon GPU with a
+  gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1152, gfx1200, or gfx1201
+  target. To look up the target of your GPU, see
+  :doc:`GPU specifications <rocm:reference/gpu-specs>`.
 * A, B, C, and D are all ``HIP_R_64F`` (FP64) or all ``HIP_R_32F`` (FP32), and
   the scale type is the same type.
 * The GEMM is not batched (``batch_count = 1``).
@@ -132,6 +137,13 @@ The strategy decides whether an enabled emulation path is taken:
 * ``eager``: hipBLASLt always emulates, regardless of problem size. Use this to
   test emulation on problems that the performance model would reject.
 
+On Radeon GPUs, FP64 GEMMs work differently when you don't set a strategy.
+hipBLASLt doesn't use the performance model for them. When ``m * n * k`` is at
+least a threshold for the GPU's target, it emulates the GEMM as with ``eager``.
+It runs smaller FP64 GEMMs natively. When you set a strategy, through the emulation
+descriptor or the environment variable, it replaces the threshold. FP32 GEMMs
+use the performance model on all GPUs.
+
 Precision target
 ----------------
 
@@ -231,8 +243,8 @@ that is set:
 
 #. The attribute on the attached emulation descriptor.
 #. The environment variable, which is read once, at first use.
-#. The built-in default: ``performant`` strategy, and 52 mantissa bits for
-   FP64 or 23 for FP32.
+#. The built-in default: ``performant`` strategy (the size threshold for FP64
+   GEMMs on Radeon GPUs), and 52 mantissa bits for FP64 or 23 for FP32.
 
 Inf and NaN detection works differently. If an emulation descriptor is
 attached, hipBLASLt always uses its ``HIPBLASLT_EMULATION_DESC_SPECIAL_VALUES_SUPPORT``
@@ -288,7 +300,9 @@ GEMM, the call runs natively and prints a warning with the optimal size.
 
 To avoid sizing the workspace for every problem, you can allocate one buffer
 and reuse it for all emulated GEMMs. On MI355X, a 16 to 32 GiB buffer gives
-close to optimal throughput for typical problem sizes.
+close to optimal throughput for typical problem sizes. On GPUs with less
+memory, such as Radeon GPUs, size the buffer to fit the available memory. A
+smaller buffer still works, with more passes.
 
 Example: FP64 GEMM with emulation
 =================================
@@ -340,8 +354,8 @@ message to ``stderr`` with the problem size and the reason, for example:
    [hipBLASLt emulation] INFO: falling back to native GEMM (m=8192, n=8192, k=8192, reason: NaN/Inf detected in inputs or ADP precision overflow).
 
 hipBLASLt prints at most five of these messages per process. It doesn't print
-a message when the ``performant`` strategy chooses the native GEMM, or when the
-GPU doesn't support emulation.
+a message when the ``performant`` strategy or the FP64 size threshold chooses
+the native GEMM, or when the GPU doesn't support emulation.
 
 For per-call details, set ``HIPBLASLT_EMULATION_PROFILE`` to a file path:
 
@@ -374,13 +388,13 @@ native path. As in the library, you can enable emulation in two ways:
 
 ``hipblaslt-bench`` doesn't attach an emulation descriptor, so use the
 environment variables to set the strategy, precision target, and Inf and NaN
-detection. With the default ``performant`` strategy, small problems run
-natively. Set ``HIPBLAS_EMULATION_STRATEGY=eager`` to emulate them anyway.
+detection. With the default strategy, small problems run natively. Set
+``HIPBLAS_EMULATION_STRATEGY=eager`` to emulate them anyway.
 
 Pass a workspace size in bytes with ``--workspace``, or with the
 ``user_allocated_workspace`` key in a YAML problem file. The examples in this
 section use 32 GiB (34359738368 bytes), which is enough for large problems on
-MI355X.
+MI355X. On a GPU with less memory, pass a smaller size.
 
 Command-line examples
 ---------------------
@@ -467,6 +481,8 @@ An emulation request runs as a native GEMM in these cases:
 
 * The call doesn't meet the `Prerequisites`_.
 * The ``performant`` strategy predicts that the native GEMM is faster.
+* On a Radeon GPU with no strategy set, an FP64 GEMM is below the size
+  threshold.
 * No workspace is passed, or the workspace is too small for emulation to beat
   the native GEMM under the ``performant`` strategy.
 * Inf or NaN detection is enabled and the input contains Inf or NaN.
