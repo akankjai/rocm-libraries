@@ -200,8 +200,7 @@ template<typename KeyT,
          typename ValueT,
          int NumThreads,
          int ItemsPerThread,
-         typename SynchronizationPolicy,
-         bool WARP_SORT = false>
+         typename SynchronizationPolicy>
 class BlockMergeSortStrategy
 {
     static_assert(_HIPCUB_LIBCXX::is_power_of_two(NumThreads), "NumThreads must be a power of two");
@@ -411,7 +410,7 @@ public:
           KeyT max_key = oob_default;
 
           HIPCUB_SORT_MAYBE_UNROLL()
-          for(int item = WARP_SORT ? 1 : 0; item < ItemsPerThread; ++item)
+          for(int item = 1; item < ItemsPerThread; ++item)
           {
               if(ItemsPerThread * static_cast<int>(linear_tid) + item < valid_items)
               {
@@ -462,15 +461,13 @@ public:
 
       const int thread_idx_in_thread_group_being_merged = mask & linear_tid;
 
-      const int COMPARE_NUM = WARP_SORT ? valid_items : ItemsPerThread * blockDim.x;
+      const int diag = (_HIPCUB_STD::min)(valid_items,
+                                          ItemsPerThread * thread_idx_in_thread_group_being_merged);
 
-      const int diag
-          = (::rocprim::min)(COMPARE_NUM, ItemsPerThread * thread_idx_in_thread_group_being_merged);
-
-      const int keys1_beg = (::rocprim::min)(COMPARE_NUM, start);
-      const int keys1_end = (::rocprim::min)(COMPARE_NUM, keys1_beg + size);
+      const int keys1_beg = (_HIPCUB_STD::min)(valid_items, start);
+      const int keys1_end = (_HIPCUB_STD::min)(valid_items, keys1_beg + size);
       const int keys2_beg = keys1_end;
-      const int keys2_end = (::rocprim::min)(COMPARE_NUM, keys2_beg + size);
+      const int keys2_end = (_HIPCUB_STD::min)(valid_items, keys2_beg + size);
 
       const int keys1_count = keys1_end - keys1_beg;
       const int keys2_count = keys2_end - keys2_beg;
